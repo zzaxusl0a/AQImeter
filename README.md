@@ -23,12 +23,12 @@ The icons are not included in that license. See "Thanks" below for details on th
 
 ### Libraries required to compile:
 
-- ArduinoJson 7.4.1
+- ArduinoJson 7.4.3
 - HttpClient 2.2.0
 - TFT_eSPI 2.5.43_
 - WifiManager 2.0.17
 - XPT2046_Touchscreen 1.4
-- lvgl 9.2.2
+- lvgl 9.5.0
 
 ### Thanks & Credits
 

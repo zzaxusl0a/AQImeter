@@ -34,7 +34,7 @@ static const char *weekdays[] = {"Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "S
 int x, y, z;
 
 //AQI credentials (change before publishing)
-String my_api_read_key = "C8F0D3F7-7A45-11ED-B6F4-42010A800007"; //This is your API read key - obtain from contact@purpleair.com
+String my_api_read_key = "xxxx"; //This is your API read key - obtain from contact@purpleair.com
 String serverPath = "";
 
 // Preferences

@@ -25,6 +25,7 @@
 #define LOCATION_DEFAULT "London"
 #define DEFAULT_CAPTIVE_SSID "Aura"
 #define UPDATE_INTERVAL 600000UL  // 10 minutes
+#define AQI_HISTORY_LEN 144       // ~24h of readings at the 10-min UPDATE_INTERVAL
 
 //Global initializations
 SPIClass touchscreenSPI = SPIClass(VSPI);
@@ -89,6 +90,13 @@ static lv_obj_t *icon_red;
 static lv_obj_t *icon_purple;
 static lv_obj_t *icon_darkred;
 
+// AQI trend chart + rolling history (RAM only; resets on reboot)
+static int aqi_hist[AQI_HISTORY_LEN];
+static int aqi_hist_count = 0;             // number of valid points, capped at AQI_HISTORY_LEN
+static lv_obj_t *box_chart = nullptr;      // container for the trend chart
+static lv_obj_t *aqi_chart = nullptr;
+static lv_chart_series_t *aqi_series = nullptr;
+
 // Weather icons
 LV_IMG_DECLARE(icon_blizzard);
 LV_IMG_DECLARE(icon_blowing_snow);
@@ -127,6 +135,11 @@ const lv_img_dsc_t *choose_icon(int wmo_code, int is_day);
 int fetch_aqi();
 int aqiFromPM(float);
 int calcAQI(float, int, int, float, float);
+lv_color_t aqi_color(int aqi);
+void push_aqi_history(int aqi);
+void create_aqi_chart(lv_obj_t *parent);
+void refresh_aqi_chart();
+static void chart_cb(lv_event_t *e);
 
 
 int day_of_week(int y, int m, int d) {
@@ -250,6 +263,76 @@ void touchscreen_read(lv_indev_t *indev, lv_indev_data_t *data) {
   }
 }
 
+// Maps a US AQI value to its EPA category color (shared by the big number and the trend chart)
+lv_color_t aqi_color(int aqi) {
+  if (aqi <= 50)  return lv_color_hex(0x00FF00);  // Good
+  if (aqi <= 100) return lv_color_hex(0xFFFF00);  // Moderate
+  if (aqi <= 150) return lv_color_hex(0xFFA500);  // Unhealthy for Sensitive Groups
+  if (aqi <= 200) return lv_color_hex(0xFF0000);  // Unhealthy
+  if (aqi <= 300) return lv_color_hex(0x800080);  // Very Unhealthy
+  return lv_color_hex(0x8B0000);                  // Hazardous
+}
+
+// Append a reading to the rolling history (skips the 999 error sentinel)
+void push_aqi_history(int aqi) {
+  if (aqi == 999) return;
+  if (aqi_hist_count < AQI_HISTORY_LEN) {
+    aqi_hist[aqi_hist_count++] = aqi;
+  } else {
+    memmove(aqi_hist, aqi_hist + 1, (AQI_HISTORY_LEN - 1) * sizeof(int));
+    aqi_hist[AQI_HISTORY_LEN - 1] = aqi;
+  }
+}
+
+// Builds the AQI trend chart container, styled to match the forecast boxes
+void create_aqi_chart(lv_obj_t *parent) {
+  box_chart = lv_obj_create(parent);
+  lv_obj_set_size(box_chart, 220, 180);
+  lv_obj_align(box_chart, LV_ALIGN_TOP_LEFT, 10, 135);
+  lv_obj_set_style_bg_color(box_chart, lv_color_hex(0x5e9bc8), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(box_chart, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_radius(box_chart, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_border_width(box_chart, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_clear_flag(box_chart, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(box_chart, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_pad_all(box_chart, 10, LV_PART_MAIN);
+  lv_obj_add_event_cb(box_chart, chart_cb, LV_EVENT_CLICKED, NULL);
+
+  aqi_chart = lv_chart_create(box_chart);
+  lv_obj_set_size(aqi_chart, lv_pct(100), lv_pct(100));  // fill the padded container
+  lv_obj_center(aqi_chart);
+  lv_obj_clear_flag(aqi_chart, LV_OBJ_FLAG_CLICKABLE);   // let taps reach box_chart for the toggle
+  lv_chart_set_type(aqi_chart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(aqi_chart, AQI_HISTORY_LEN);
+  lv_chart_set_range(aqi_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+  lv_chart_set_div_line_count(aqi_chart, 4, 0);
+  lv_obj_set_style_bg_opa(aqi_chart, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(aqi_chart, 0, LV_PART_MAIN);
+  // Clean line: hide the per-point markers
+  lv_obj_set_style_width(aqi_chart, 0, LV_PART_INDICATOR);
+  lv_obj_set_style_height(aqi_chart, 0, LV_PART_INDICATOR);
+  aqi_series = lv_chart_add_series(aqi_chart, lv_color_hex(0xFFFFFF), LV_CHART_AXIS_PRIMARY_Y);
+}
+
+// Repaint the trend chart from the history buffer, with a dynamic Y range
+void refresh_aqi_chart() {
+  if (aqi_chart == nullptr || aqi_series == nullptr || aqi_hist_count == 0) return;
+
+  // Y max: at least 100, otherwise the peak rounded up to the next 50
+  int peak = 0;
+  for (int i = 0; i < aqi_hist_count; i++)
+    if (aqi_hist[i] > peak) peak = aqi_hist[i];
+  int dyn_max = (peak > 100) ? ((peak + 49) / 50) * 50 : 100;
+  lv_chart_set_range(aqi_chart, LV_CHART_AXIS_PRIMARY_Y, 0, dyn_max);
+
+  lv_chart_set_point_count(aqi_chart, aqi_hist_count);
+  for (int i = 0; i < aqi_hist_count; i++)
+    lv_chart_set_value_by_id(aqi_chart, aqi_series, i, aqi_hist[i]);
+
+  lv_chart_set_series_color(aqi_chart, aqi_series, aqi_color(aqi_hist[aqi_hist_count - 1]));
+  lv_chart_refresh(aqi_chart);
+}
+
 // AQI display update function
 void update_aqi_display() {
   int aqi = fetch_aqi();   // your AQI fetch function
@@ -276,32 +359,26 @@ void update_aqi_display() {
   char buf[16];
   snprintf(buf, sizeof(buf), "%d", aqi);
   lv_label_set_text(lbl_aqi_value, buf);
-  lv_color_t txt_color = lv_color_hex(0xFFFFFF);
+  lv_color_t txt_color = aqi_color(aqi);
   const char *category = "Unknown";
 
   if (aqi <= 50) {
     lv_obj_clear_flag(icon_green, LV_OBJ_FLAG_HIDDEN);
-    txt_color = lv_color_hex(0x00FF00);
     category = "Good";
   } else if (aqi <= 100) {
       lv_obj_clear_flag(icon_yellow, LV_OBJ_FLAG_HIDDEN);
-      txt_color = lv_color_hex(0xFFFF00);
       category = "Moderate";
   } else if (aqi <= 150) {
       lv_obj_clear_flag(icon_orange, LV_OBJ_FLAG_HIDDEN);
-      txt_color = lv_color_hex(0xFFA500);
       category = "Unhealthy";
   } else if (aqi <= 200) {
       lv_obj_clear_flag(icon_red, LV_OBJ_FLAG_HIDDEN);
-      txt_color = lv_color_hex(0xFF0000);
       category = "Unhealthy";
   } else if (aqi <= 300) {
       lv_obj_clear_flag(icon_purple, LV_OBJ_FLAG_HIDDEN);
-      txt_color = lv_color_hex(0x800080);
       category = "Very Unhealthy";
   } else {
       lv_obj_clear_flag(icon_darkred, LV_OBJ_FLAG_HIDDEN);
-      txt_color = lv_color_hex(0x8B0000);
       category = "Hazardous";
   }
 
@@ -309,6 +386,10 @@ void update_aqi_display() {
   lv_obj_set_style_text_color(lbl_aqi_value, txt_color, 0);
   lv_obj_set_style_text_color(lbl_aqi_category, txt_color, 0);
   lv_label_set_text(lbl_aqi_category, category);
+
+  // Record this reading for the trend chart
+  push_aqi_history(aqi);
+  refresh_aqi_chart();
 }
 
 void setup() {
@@ -566,6 +647,11 @@ void create_ui() {
 
   lv_obj_add_flag(box_hourly, LV_OBJ_FLAG_HIDDEN);
 
+  // AQI trend chart — the default view; forecast boxes are cycled in via tapping
+  create_aqi_chart(scr);
+  lv_obj_add_flag(box_daily, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(lbl_forecast, "AQI TREND (24H)");
+
   // Create clock label in the top-right corner
   lbl_clock = lv_label_create(scr);
   lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -644,6 +730,13 @@ void screen_event_cb(lv_event_t *e) {
   create_settings_window();
 }
 
+// Tap-to-cycle the content area: chart -> 7-day -> hourly -> chart
+void chart_cb(lv_event_t *e) {
+  lv_obj_add_flag(box_chart, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(lbl_forecast, "SEVEN DAY FORECAST");
+  lv_obj_clear_flag(box_daily, LV_OBJ_FLAG_HIDDEN);
+}
+
 void daily_cb(lv_event_t *e) {
   lv_obj_add_flag(box_daily, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(lbl_forecast, "HOURLY FORECAST");
@@ -652,8 +745,8 @@ void daily_cb(lv_event_t *e) {
 
 void hourly_cb(lv_event_t *e) {
   lv_obj_add_flag(box_hourly, LV_OBJ_FLAG_HIDDEN);
-  lv_label_set_text(lbl_forecast, "SEVEN DAY FORECAST");
-  lv_obj_clear_flag(box_daily, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(lbl_forecast, "AQI TREND (24H)");
+  lv_obj_clear_flag(box_chart, LV_OBJ_FLAG_HIDDEN);
 }
 
 

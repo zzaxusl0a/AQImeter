@@ -75,15 +75,22 @@ AQI Meter requires a **PurpleAir API Read Key**.
 
 PurpleAir documents this process in their community guide.
 
-### Add Your API Key to the Sketch
+### Add Your API Key
 
-Open `aqimeter.ino` and replace the example key:
+The key is kept in a local `secrets.h` file that is **not** committed to git.
 
-```cpp
-String my_api_read_key = "YOUR_PURPLEAIR_READ_KEY";
-```
+1. In the `aura/` folder, copy the template to create your own secrets file:
 
-with your own PurpleAir API Read Key.
+   ```bash
+   cp secrets.h.example secrets.h
+   ```
+2. Open `secrets.h` and replace the placeholder with your own PurpleAir API Read Key:
+
+   ```cpp
+   #define PURPLEAIR_API_KEY "YOUR_PURPLEAIR_READ_KEY"
+   ```
+
+`aqimeter.ino` includes `secrets.h` automatically.
 
 ## How to Compile
 
@@ -93,7 +100,7 @@ with your own PurpleAir API Read Key.
    - Set **Tools → Partition Scheme** to **Huge App (3MB No OTA/1MB SPIFFS)**.
 2. Install the required libraries listed below.
 3. Copy the project folders into your Arduino sketch directory (typically `~/Documents/Arduino/`).
-4. Replace the PurpleAir API key in `aqimeter.ino`.
+4. Create `secrets.h` from `secrets.h.example` and add your PurpleAir API key (see above).
 5. Compile and upload to the display.
 
 ## Required Libraries

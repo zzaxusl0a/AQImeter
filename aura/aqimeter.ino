@@ -8,6 +8,7 @@
 #include <XPT2046_Touchscreen.h>
 #include <Preferences.h>
 #include "esp_system.h"
+#include "secrets.h"   // PURPLEAIR_API_KEY — untracked; copy secrets.h.example to secrets.h
 
 #define XPT2046_IRQ 36   // T_IRQ
 #define XPT2046_MOSI 32  // T_DIN
@@ -24,7 +25,6 @@
 #define LOCATION_DEFAULT "London"
 #define DEFAULT_CAPTIVE_SSID "Aura"
 #define UPDATE_INTERVAL 600000UL  // 10 minutes
-#define AQI_ICON_SIZE 48
 
 //Global initializations
 SPIClass touchscreenSPI = SPIClass(VSPI);
@@ -33,8 +33,8 @@ uint32_t draw_buf[DRAW_BUF_SIZE / 4];
 static const char *weekdays[] = {"Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat"};
 int x, y, z;
 
-//AQI credentials (change before publishing)
-String my_api_read_key = "xxxx"; //This is your API read key - obtain from contact@purpleair.com
+//AQI credentials — set PURPLEAIR_API_KEY in secrets.h (untracked), not here
+String my_api_read_key = PURPLEAIR_API_KEY; //PurpleAir API read key from secrets.h
 String serverPath = "";
 
 // Preferences
@@ -117,41 +117,12 @@ LV_IMG_DECLARE(icon_sunny);
 LV_IMG_DECLARE(icon_tornado);
 LV_IMG_DECLARE(icon_wintry_mix_rain_snow);
 
-// Weather Images
-LV_IMG_DECLARE(image_blizzard);
-LV_IMG_DECLARE(image_blowing_snow);
-LV_IMG_DECLARE(image_clear_night);
-LV_IMG_DECLARE(image_cloudy);
-LV_IMG_DECLARE(image_drizzle);
-LV_IMG_DECLARE(image_flurries);
-LV_IMG_DECLARE(image_haze_fog_dust_smoke);
-LV_IMG_DECLARE(image_heavy_rain);
-LV_IMG_DECLARE(image_heavy_snow);
-LV_IMG_DECLARE(image_isolated_scattered_tstorms_day);
-LV_IMG_DECLARE(image_isolated_scattered_tstorms_night);
-LV_IMG_DECLARE(image_mostly_clear_night);
-LV_IMG_DECLARE(image_mostly_cloudy_day);
-LV_IMG_DECLARE(image_mostly_cloudy_night);
-LV_IMG_DECLARE(image_mostly_sunny);
-LV_IMG_DECLARE(image_partly_cloudy);
-LV_IMG_DECLARE(image_partly_cloudy_night);
-LV_IMG_DECLARE(image_scattered_showers_day);
-LV_IMG_DECLARE(image_scattered_showers_night);
-LV_IMG_DECLARE(image_showers_rain);
-LV_IMG_DECLARE(image_sleet_hail);
-LV_IMG_DECLARE(image_snow_showers_snow);
-LV_IMG_DECLARE(image_strong_tstorms);
-LV_IMG_DECLARE(image_sunny);
-LV_IMG_DECLARE(image_tornado);
-LV_IMG_DECLARE(image_wintry_mix_rain_snow);
-
 //function declarations
 void create_ui();
 void fetch_and_update_weather();
 void create_settings_window();
 static void screen_event_cb(lv_event_t *e);
 static void settings_event_handler(lv_event_t *e);
-//const lv_img_dsc_t *choose_image(int wmo_code, int is_day);
 const lv_img_dsc_t *choose_icon(int wmo_code, int is_day);
 int fetch_aqi();
 int aqiFromPM(float);
@@ -338,65 +309,6 @@ void update_aqi_display() {
   lv_obj_set_style_text_color(lbl_aqi_value, txt_color, 0);
   lv_obj_set_style_text_color(lbl_aqi_category, txt_color, 0);
   lv_label_set_text(lbl_aqi_category, category);
-}
-
-// Helper to make a colored square
-lv_obj_t* create_color_icon(lv_color_t color) {
-  // Create a canvas
-  lv_obj_t *canvas = lv_canvas_create(lv_scr_act());
-  // Allocate buffer for the canvas (RGBA, 4 bytes per pixel)
-  static lv_color_t cbuf[AQI_ICON_SIZE * AQI_ICON_SIZE];
-  lv_canvas_set_buffer(canvas, cbuf, AQI_ICON_SIZE, AQI_ICON_SIZE, LV_COLOR_FORMAT_NATIVE);
-  // Fill with color
-  lv_canvas_fill_bg(canvas, color, LV_OPA_COVER);
-
-  // Hide it initially (we’ll only show one at a time)
-  lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
-
-  return canvas;
-}
-
-void create_aqi_icons() {
-  icon_green   = create_color_icon(lv_color_hex(0x00FF00)); // Green
-  icon_yellow  = create_color_icon(lv_color_hex(0xFFFF00)); // Yellow
-  icon_orange  = create_color_icon(lv_color_hex(0xFFA500)); // Orange
-  icon_red     = create_color_icon(lv_color_hex(0xFF0000)); // Red
-  icon_purple  = create_color_icon(lv_color_hex(0x800080)); // Purple
-  icon_darkred = create_color_icon(lv_color_hex(0x8B0000)); // Dark Red
-
-  // Position all canvases in the same place
-  lv_obj_align(icon_green, LV_ALIGN_TOP_LEFT, 20, 110);
-  lv_obj_align(icon_yellow, LV_ALIGN_TOP_LEFT, 20, 110);
-  lv_obj_align(icon_orange, LV_ALIGN_TOP_LEFT, 20, 110);
-  lv_obj_align(icon_red, LV_ALIGN_TOP_LEFT, 20, 110);
-  lv_obj_align(icon_purple, LV_ALIGN_TOP_LEFT, 20, 110);
-  lv_obj_align(icon_darkred, LV_ALIGN_TOP_LEFT, 20, 110);
-}
-
-// Instead of get_aqi_icon(), we just show/hide the right canvas
-void update_aqi_icon(int aqi) {
-  // Hide all first
-  lv_obj_add_flag(icon_green,   LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(icon_yellow,  LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(icon_orange,  LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(icon_red,     LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(icon_purple,  LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(icon_darkred, LV_OBJ_FLAG_HIDDEN);
-
-  // Show correct one
-  if (aqi <= 50) {
-      lv_obj_clear_flag(icon_green, LV_OBJ_FLAG_HIDDEN);
-  } else if (aqi <= 100) {
-      lv_obj_clear_flag(icon_yellow, LV_OBJ_FLAG_HIDDEN);
-  } else if (aqi <= 150) {
-      lv_obj_clear_flag(icon_orange, LV_OBJ_FLAG_HIDDEN);
-  } else if (aqi <= 200) {
-      lv_obj_clear_flag(icon_red, LV_OBJ_FLAG_HIDDEN);
-  } else if (aqi <= 300) {
-      lv_obj_clear_flag(icon_purple, LV_OBJ_FLAG_HIDDEN);
-  } else {
-      lv_obj_clear_flag(icon_darkred, LV_OBJ_FLAG_HIDDEN);
-  }
 }
 
 void setup() {

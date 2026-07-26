@@ -1,3 +1,6 @@
 .venv
 .idea
 .DS_Store
+
+# Local secrets — never commit real API keys (use secrets.h.example as the template)
+secrets.h

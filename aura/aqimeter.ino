@@ -26,6 +26,8 @@
 #define DEFAULT_CAPTIVE_SSID "Aura"
 #define UPDATE_INTERVAL 600000UL  // 10 minutes
 #define AQI_HISTORY_LEN 144       // ~24h of readings at the 10-min UPDATE_INTERVAL
+#define AQI_PLOT_MAX 400          // fixed top of the trend plot; spikes above run off the top
+#define AQI_LINE_WIDTH 3          // trend line thickness in px (gridlines stay 1px)
 
 //Global initializations
 SPIClass touchscreenSPI = SPIClass(VSPI);
@@ -94,8 +96,7 @@ static lv_obj_t *icon_darkred;
 static int aqi_hist[AQI_HISTORY_LEN];
 static int aqi_hist_count = 0;             // number of valid points, capped at AQI_HISTORY_LEN
 static lv_obj_t *box_chart = nullptr;      // container for the trend chart
-static lv_obj_t *aqi_chart = nullptr;
-static lv_chart_series_t *aqi_series = nullptr;
+static lv_obj_t *aqi_plot = nullptr;       // custom-drawn trend plot (fixed 0..AQI_PLOT_MAX scale)
 
 // Weather icons
 LV_IMG_DECLARE(icon_blizzard);
@@ -140,6 +141,7 @@ void push_aqi_history(int aqi);
 void create_aqi_chart(lv_obj_t *parent);
 void refresh_aqi_chart();
 static void chart_cb(lv_event_t *e);
+static void aqi_plot_draw_cb(lv_event_t *e);
 
 
 int day_of_week(int y, int m, int d) {
@@ -284,7 +286,56 @@ void push_aqi_history(int aqi) {
   }
 }
 
-// Builds the AQI trend chart container, styled to match the forecast boxes
+// Maps an AQI value (0..AQI_PLOT_MAX) to a y pixel within the plot's content area.
+static int32_t aqi_plot_y(const lv_area_t *a, int v) {
+  if (v < 0) v = 0;
+  if (v > AQI_PLOT_MAX) v = AQI_PLOT_MAX;
+  int32_t h = lv_area_get_height(a);
+  return a->y2 - (int32_t)((long)v * h / AQI_PLOT_MAX);
+}
+
+// Draws the fixed-scale trend: EPA boundary gridlines + a trend line colored by AQI level.
+static void aqi_plot_draw_cb(lv_event_t *e) {
+  lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+  lv_layer_t *layer = lv_event_get_layer(e);
+  lv_area_t a;
+  lv_obj_get_content_coords(obj, &a);
+  int32_t w = lv_area_get_width(&a);
+
+  // Horizontal gridlines at the AQI category boundaries
+  static const int bounds[] = {50, 100, 150, 200, 300};
+  lv_draw_line_dsc_t grid;
+  lv_draw_line_dsc_init(&grid);
+  grid.color = lv_color_hex(0xFFFFFF);
+  grid.opa = LV_OPA_30;
+  grid.width = 1;
+  for (unsigned b = 0; b < sizeof(bounds) / sizeof(bounds[0]); b++) {
+    int32_t yy = aqi_plot_y(&a, bounds[b]);
+    grid.p1.x = a.x1; grid.p1.y = yy;
+    grid.p2.x = a.x2; grid.p2.y = yy;
+    lv_draw_line(layer, &grid);
+  }
+
+  if (aqi_hist_count < 1) return;
+
+  // Trend line: one segment per interval, each colored by that reading's AQI level
+  lv_draw_line_dsc_t seg;
+  lv_draw_line_dsc_init(&seg);
+  seg.width = AQI_LINE_WIDTH;
+  seg.round_start = 1;
+  seg.round_end = 1;
+  int denom = (aqi_hist_count > 1) ? (aqi_hist_count - 1) : 1;
+  for (int i = 1; i < aqi_hist_count; i++) {
+    int32_t x0 = a.x1 + (int32_t)((long)(i - 1) * w / denom);
+    int32_t x1 = a.x1 + (int32_t)((long)i * w / denom);
+    seg.color = aqi_color(aqi_hist[i]);
+    seg.p1.x = x0; seg.p1.y = aqi_plot_y(&a, aqi_hist[i - 1]);
+    seg.p2.x = x1; seg.p2.y = aqi_plot_y(&a, aqi_hist[i]);
+    lv_draw_line(layer, &seg);
+  }
+}
+
+// Builds the AQI trend plot container, styled to match the forecast boxes
 void create_aqi_chart(lv_obj_t *parent) {
   box_chart = lv_obj_create(parent);
   lv_obj_set_size(box_chart, 220, 180);
@@ -298,39 +349,21 @@ void create_aqi_chart(lv_obj_t *parent) {
   lv_obj_set_style_pad_all(box_chart, 10, LV_PART_MAIN);
   lv_obj_add_event_cb(box_chart, chart_cb, LV_EVENT_CLICKED, NULL);
 
-  aqi_chart = lv_chart_create(box_chart);
-  lv_obj_set_size(aqi_chart, lv_pct(100), lv_pct(100));  // fill the padded container
-  lv_obj_center(aqi_chart);
-  lv_obj_clear_flag(aqi_chart, LV_OBJ_FLAG_CLICKABLE);   // let taps reach box_chart for the toggle
-  lv_chart_set_type(aqi_chart, LV_CHART_TYPE_LINE);
-  lv_chart_set_point_count(aqi_chart, AQI_HISTORY_LEN);
-  lv_chart_set_range(aqi_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-  lv_chart_set_div_line_count(aqi_chart, 4, 0);
-  lv_obj_set_style_bg_opa(aqi_chart, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_border_width(aqi_chart, 0, LV_PART_MAIN);
-  // Clean line: hide the per-point markers
-  lv_obj_set_style_width(aqi_chart, 0, LV_PART_INDICATOR);
-  lv_obj_set_style_height(aqi_chart, 0, LV_PART_INDICATOR);
-  aqi_series = lv_chart_add_series(aqi_chart, lv_color_hex(0xFFFFFF), LV_CHART_AXIS_PRIMARY_Y);
+  // Custom-drawn plot fills the padded container; taps pass through to box_chart
+  aqi_plot = lv_obj_create(box_chart);
+  lv_obj_set_size(aqi_plot, lv_pct(100), lv_pct(100));
+  lv_obj_center(aqi_plot);
+  lv_obj_clear_flag(aqi_plot, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(aqi_plot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(aqi_plot, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(aqi_plot, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(aqi_plot, 0, LV_PART_MAIN);
+  lv_obj_add_event_cb(aqi_plot, aqi_plot_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 }
 
-// Repaint the trend chart from the history buffer, with a dynamic Y range
+// Redraw the trend plot from the history buffer
 void refresh_aqi_chart() {
-  if (aqi_chart == nullptr || aqi_series == nullptr || aqi_hist_count == 0) return;
-
-  // Y max: at least 100, otherwise the peak rounded up to the next 50
-  int peak = 0;
-  for (int i = 0; i < aqi_hist_count; i++)
-    if (aqi_hist[i] > peak) peak = aqi_hist[i];
-  int dyn_max = (peak > 100) ? ((peak + 49) / 50) * 50 : 100;
-  lv_chart_set_range(aqi_chart, LV_CHART_AXIS_PRIMARY_Y, 0, dyn_max);
-
-  lv_chart_set_point_count(aqi_chart, aqi_hist_count);
-  for (int i = 0; i < aqi_hist_count; i++)
-    lv_chart_set_value_by_id(aqi_chart, aqi_series, i, aqi_hist[i]);
-
-  lv_chart_set_series_color(aqi_chart, aqi_series, aqi_color(aqi_hist[aqi_hist_count - 1]));
-  lv_chart_refresh(aqi_chart);
+  if (aqi_plot != nullptr) lv_obj_invalidate(aqi_plot);
 }
 
 // AQI display update function
